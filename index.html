@@ -193,7 +193,7 @@ async function doLogin() {
       localStorage.setItem('mca_code', code);
       showApp();
     } else {
-      errEl.textContent = 'Incorrect code.';
+      errEl.textContent = data.error || 'Incorrect code.';
     }
   } catch (e) {
     errEl.textContent = 'Request failed: ' + e.message;
