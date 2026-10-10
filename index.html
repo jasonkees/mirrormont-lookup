@@ -109,6 +109,30 @@
   .dbtn.done small { color: #86efac; }
   .dbtn:disabled { opacity: .6; cursor: default; }
   .dnote { color: #94a3b8; font-size: 12px; margin-top: 12px; }
+  .paybtn {
+    width: 100%;
+    margin-top: 10px;
+    padding: 12px;
+    border-radius: 10px;
+    border: 1px solid #3b82f6;
+    background: transparent;
+    color: #93c5fd;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .paybtn:active { background: #1e293b; }
+  .paybox { margin-top: 10px; padding: 12px; border-radius: 10px; background: #0f172a; border: 1px solid #334155; }
+  .paybox .plabel { color: #94a3b8; font-size: 12px; margin: 4px 0 6px; text-transform: uppercase; letter-spacing: .04em; }
+  .paybox input { margin-bottom: 8px; }
+  .methods { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+  .dbtn.sel { background: #1d4ed8; border-color: #3b82f6; color: #fff; }
+  .payactions { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; }
+  .payactions button { padding: 12px; border-radius: 10px; border: none; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .payactions .cancel { background: #334155; color: #e2e8f0; }
+  .payactions .go { background: #16a34a; color: #fff; }
+  .payactions button:disabled { opacity: .6; }
+  .payerr { color: #fca5a5; font-size: 13px; margin-top: 8px; }
   #summary {
     display: none;
     background: #1e293b;
@@ -178,6 +202,7 @@ let ACCESS_CODE = localStorage.getItem('mca_code') || '';
 let debounceTimer;
 let captchaAnswer;
 let CLEANUP_YEAR = new Date().getFullYear();
+const DUES_AMOUNT = 50;   // default shown in the payment form; editable per payment
 const memberStore = {};   // id -> member record from the latest search (kept so buttons can update in place)
 const CATEGORIES = [
   { key: 'garbage',     label: 'Garbage' },
@@ -288,9 +313,15 @@ async function runSearch(q) {
 function renderResults(items) {
   const resultsEl = document.getElementById('results');
   if (!items.length) { resultsEl.innerHTML = '<div class="empty">No matches</div>'; return; }
-  const thisYear = new Date().getFullYear();
-  resultsEl.innerHTML = items.map(m => {
-    const paid = m.latestPaidYear && parseInt(m.latestPaidYear, 10) >= thisYear;
+  resultsEl.innerHTML = items.map(cardHtml).join('');
+}
+
+function isPaid(m) {
+  return !!(m.latestPaidYear && parseInt(m.latestPaidYear, 10) >= CLEANUP_YEAR);
+}
+
+function cardHtml(m) {
+    const paid = isPaid(m);
     const coName = (m.coName || '').trim();
     return `
       <div class="card" id="card-${esc(m.id)}">
@@ -304,14 +335,14 @@ function renderResults(items) {
         </div>
         ${dropoffHtml(m, paid)}
       </div>`;
-  }).join('');
 }
 
 // ── SPRING CLEANUP DROP-OFFS ──────────────────────────────
 function dropoffHtml(m, paid) {
   memberStore[m.id] = m;
   if (!paid) {
-    return `<div class="dnote">Not eligible for ${CLEANUP_YEAR} spring cleanup until dues are paid.</div>`;
+    return `<div class="dnote">Dues aren't current for ${CLEANUP_YEAR}. Record a payment to enable drop-offs.</div>
+      <div class="payslot" id="pay-${esc(m.id)}"><button class="paybtn" onclick="openPay('${esc(m.id)}')">Record dues payment</button></div>`;
   }
   const d = m.dropoffs || {};
   const btns = CATEGORIES.map(c => {
@@ -320,6 +351,79 @@ function dropoffHtml(m, paid) {
               onclick="toggleDropoff(this)">${at ? '✓ ' : ''}${c.label}${at ? `<small>${esc(fmtTime(at))}</small>` : ''}</button>`;
   }).join('');
   return `<div class="dropoffs"><div class="dlabel">${CLEANUP_YEAR} spring cleanup drop-offs</div><div class="dropoff-btns">${btns}</div></div>`;
+}
+
+// ── RECORD DUES AT THE CLEANUP (cash / check) ─────────────
+function openPay(id) {
+  const slot = document.getElementById('pay-' + id);
+  if (!slot) return;
+  slot.innerHTML = `
+    <div class="paybox" data-method="">
+      <div class="plabel">Payment method</div>
+      <div class="methods">
+        <button class="dbtn" data-m="cash"  onclick="pickMethod('${id}','cash')">Cash</button>
+        <button class="dbtn" data-m="check" onclick="pickMethod('${id}','check')">Check</button>
+      </div>
+      <input id="paychk-${id}" type="text" inputmode="numeric" placeholder="Check number (optional)" autocomplete="off" style="display:none">
+      <div class="plabel">Amount ($)</div>
+      <input id="payamt-${id}" type="number" inputmode="decimal" step="0.01" min="0" value="${DUES_AMOUNT}">
+      <div class="payactions">
+        <button class="cancel" onclick="closePay('${id}')">Cancel</button>
+        <button class="go" id="paygo-${id}" onclick="submitPay('${id}')">Record payment</button>
+      </div>
+      <div class="payerr" id="payerr-${id}"></div>
+    </div>`;
+}
+
+function closePay(id) {
+  const slot = document.getElementById('pay-' + id);
+  if (slot) slot.innerHTML = `<button class="paybtn" onclick="openPay('${id}')">Record dues payment</button>`;
+}
+
+function pickMethod(id, method) {
+  const box = document.querySelector('#pay-' + id + ' .paybox');
+  if (!box) return;
+  box.dataset.method = method;
+  box.querySelectorAll('.methods .dbtn').forEach(b => b.classList.toggle('sel', b.dataset.m === method));
+  document.getElementById('paychk-' + id).style.display = method === 'check' ? '' : 'none';
+  document.getElementById('payerr-' + id).textContent = '';
+}
+
+async function submitPay(id) {
+  const m = memberStore[id];
+  const box = document.querySelector('#pay-' + id + ' .paybox');
+  const errEl = document.getElementById('payerr-' + id);
+  if (!m || !box) return;
+  const method = box.dataset.method;
+  const amount = parseFloat(document.getElementById('payamt-' + id).value);
+  if (!method) { errEl.textContent = 'Choose Cash or Check.'; return; }
+  if (!(amount > 0)) { errEl.textContent = 'Enter the amount received.'; return; }
+  if (!confirm('Record $' + amount.toFixed(2) + ' ' + method + ' for ' + (m.name || 'this member') + ' (' + CLEANUP_YEAR + ' dues)?')) return;
+
+  const go = document.getElementById('paygo-' + id);
+  go.disabled = true; errEl.textContent = '';
+  try {
+    const res = await fetch(API_BASE + '/payment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Access-Code': ACCESS_CODE },
+      body: JSON.stringify({
+        memberId: id,
+        method,
+        amount,
+        checkNumber: method === 'check' ? document.getElementById('paychk-' + id).value.trim() : ''
+      })
+    });
+    if (res.status === 403) { localStorage.removeItem('mca_code'); location.reload(); return; }
+    const data = await res.json();
+    if (!data.ok) throw new Error((data.error || 'Could not save') + (data.detail ? ' — ' + data.detail : ''));
+    m.latestPaidYear = data.latestPaidYear;
+    m.paidThrough = data.paidThrough || m.paidThrough;
+    const card = document.getElementById('card-' + id);
+    if (card) card.outerHTML = cardHtml(m);   // card flips to "Paid" and the drop-off buttons appear
+  } catch (e) {
+    errEl.textContent = 'Could not save: ' + e.message;
+    go.disabled = false;
+  }
 }
 
 function fmtTime(iso) {
