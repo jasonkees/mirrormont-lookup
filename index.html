@@ -353,7 +353,7 @@ async function toggleDropoff(btn) {
     });
     if (res.status === 403) { localStorage.removeItem('mca_code'); location.reload(); return; }
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error || 'Could not save');
+    if (!data.ok) throw new Error((data.error || 'Could not save') + (data.detail ? ' — ' + data.detail : ''));
     m.dropoffs = data.dropoffs || {};
     if (card) {
       const old = card.querySelector('.dropoffs');
