@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>MCA Member Lookup</title>
+<title>MCA Lookup &amp; Spring Cleanup</title>
 
 <!-- PWA / iOS -->
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -88,6 +88,38 @@
   .search-wrap { position: relative; }
   .search-wrap input { padding-right: 42px; }
   input[type="search"]::-webkit-search-cancel-button { display: none; }
+  .dropoffs { margin-top: 12px; }
+  .dropoffs .dlabel { color: #94a3b8; font-size: 12px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+  .dropoff-btns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .dbtn {
+    padding: 12px 4px;
+    border-radius: 10px;
+    border: 1px solid #334155;
+    background: #0f172a;
+    color: #cbd5e1;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    line-height: 1.25;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .dbtn small { display: block; font-weight: 400; font-size: 11px; color: #94a3b8; margin-top: 2px; }
+  .dbtn:active { background: #1e293b; }
+  .dbtn.done { background: #14532d; border-color: #166534; color: #bbf7d0; }
+  .dbtn.done small { color: #86efac; }
+  .dbtn:disabled { opacity: .6; cursor: default; }
+  .dnote { color: #94a3b8; font-size: 12px; margin-top: 12px; }
+  #summary {
+    display: none;
+    background: #1e293b;
+    border-radius: 12px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: #cbd5e1;
+  }
+  #summary b { color: #f1f5f9; }
+  #summary .sline { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
   #clearBtn {
     display: none;
     position: absolute;
@@ -108,7 +140,7 @@
 </style>
 </head>
 <body>
-<header>Mirrormont Member Lookup</header>
+<header>Mirrormont Lookup &amp; Spring Cleanup</header>
 
 <!-- Step 1: Math CAPTCHA -->
 <div id="captcha">
@@ -131,6 +163,7 @@
 
 <!-- Step 3: Search -->
 <div id="app">
+  <div id="summary"></div>
   <div class="search-wrap">
     <input id="q" type="search" placeholder="Search name, address, email, or phone…"
            oninput="onSearch()" autocomplete="off">
@@ -144,6 +177,13 @@ const API_BASE = 'https://www.mirrormont.org/_functions';
 let ACCESS_CODE = localStorage.getItem('mca_code') || '';
 let debounceTimer;
 let captchaAnswer;
+let CLEANUP_YEAR = new Date().getFullYear();
+const memberStore = {};   // id -> member record from the latest search (kept so buttons can update in place)
+const CATEGORIES = [
+  { key: 'garbage',     label: 'Garbage' },
+  { key: 'electronics', label: 'Electronics' },
+  { key: 'styrofoam',   label: 'Styrofoam' }
+];
 
 // ── CAPTCHA ──────────────────────────────────────────────
 function initCaptcha() {
@@ -204,6 +244,7 @@ function showApp() {
   document.getElementById('login').style.display = 'none';
   document.getElementById('app').style.display = 'block';
   document.getElementById('q').focus();
+  loadSummary();
 }
 
 // ── SEARCH ────────────────────────────────────────────────
@@ -237,6 +278,7 @@ async function runSearch(q) {
     });
     if (res.status === 403) { localStorage.removeItem('mca_code'); location.reload(); return; }
     const data = await res.json();
+    if (data.cleanupYear) CLEANUP_YEAR = data.cleanupYear;
     renderResults(data.results || []);
   } catch (e) {
     resultsEl.innerHTML = '<div class="empty">Search failed — check your connection.</div>';
@@ -251,7 +293,7 @@ function renderResults(items) {
     const paid = m.latestPaidYear && parseInt(m.latestPaidYear, 10) >= thisYear;
     const coName = (m.coName || '').trim();
     return `
-      <div class="card">
+      <div class="card" id="card-${esc(m.id)}">
         <div class="name">${esc(m.name || 'Unnamed')}</div>
         ${coName ? `<div class="co">${esc(coName)}</div>` : ''}
         <div class="row"><span>Address</span><span>${esc(m.address || '—')}</span></div>
@@ -260,8 +302,86 @@ function renderResults(items) {
         <div class="badge ${paid ? 'paid' : 'due'}">
           ${paid ? `Paid through ${esc(String(m.latestPaidYear || m.paidThrough))}` : `Dues due (last paid: ${esc(String(m.latestPaidYear || 'unknown'))})`}
         </div>
+        ${dropoffHtml(m, paid)}
       </div>`;
   }).join('');
+}
+
+// ── SPRING CLEANUP DROP-OFFS ──────────────────────────────
+function dropoffHtml(m, paid) {
+  memberStore[m.id] = m;
+  if (!paid) {
+    return `<div class="dnote">Not eligible for ${CLEANUP_YEAR} spring cleanup until dues are paid.</div>`;
+  }
+  const d = m.dropoffs || {};
+  const btns = CATEGORIES.map(c => {
+    const at = d[c.key];
+    return `<button class="dbtn ${at ? 'done' : ''}" data-id="${esc(m.id)}" data-cat="${c.key}"
+              onclick="toggleDropoff(this)">${at ? '✓ ' : ''}${c.label}${at ? `<small>${esc(fmtTime(at))}</small>` : ''}</button>`;
+  }).join('');
+  return `<div class="dropoffs"><div class="dlabel">${CLEANUP_YEAR} spring cleanup drop-offs</div><div class="dropoff-btns">${btns}</div></div>`;
+}
+
+function fmtTime(iso) {
+  const t = new Date(iso);
+  if (isNaN(t)) return 'dropped';
+  return t.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
+         t.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+async function toggleDropoff(btn) {
+  const id  = btn.dataset.id;
+  const cat = btn.dataset.cat;
+  const m   = memberStore[id];
+  if (!m) return;
+  const label = CATEGORIES.find(c => c.key === cat).label;
+  const already = !!(m.dropoffs && m.dropoffs[cat]);
+
+  // Un-flagging needs a confirm so a stray tap can't erase a record
+  if (already && !confirm('Remove the ' + label + ' drop-off for ' + (m.name || 'this member') + '?')) return;
+
+  // Disable this household's buttons while the request is in flight
+  const card = document.getElementById('card-' + id);
+  const group = card ? card.querySelectorAll('.dbtn') : [btn];
+  group.forEach(b => b.disabled = true);
+
+  try {
+    const res = await fetch(API_BASE + '/dropoff', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Access-Code': ACCESS_CODE },
+      body: JSON.stringify({ memberId: id, category: cat, dropped: !already })
+    });
+    if (res.status === 403) { localStorage.removeItem('mca_code'); location.reload(); return; }
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Could not save');
+    m.dropoffs = data.dropoffs || {};
+    if (card) {
+      const old = card.querySelector('.dropoffs');
+      if (old) old.outerHTML = dropoffHtml(m, true);
+    }
+    loadSummary();
+  } catch (e) {
+    alert('Could not save: ' + e.message);
+    group.forEach(b => b.disabled = false);
+  }
+}
+
+async function loadSummary() {
+  const el = document.getElementById('summary');
+  try {
+    const res = await fetch(API_BASE + '/cleanup_summary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Access-Code': ACCESS_CODE },
+      body: '{}'
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.ok) return;
+    const t = data.totals || {};
+    el.innerHTML = `<div class="sline"><span><b>${esc(String(data.year))} spring cleanup</b> · ${esc(String(data.households))} household${data.households === 1 ? '' : 's'}</span>` +
+      `<span>Garbage <b>${t.garbage || 0}</b> · Electronics <b>${t.electronics || 0}</b> · Styrofoam <b>${t.styrofoam || 0}</b></span></div>`;
+    el.style.display = 'block';
+  } catch (_) { /* summary is optional */ }
 }
 
 function esc(s) {
