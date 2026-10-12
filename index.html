@@ -198,7 +198,29 @@
 
 <script>
 const API_BASE = 'https://www.mirrormont.org/_functions';
-let ACCESS_CODE = localStorage.getItem('mca_code') || '';
+// Session token (issued at login, expires server-side). The raw board code is never stored.
+try { localStorage.removeItem('mca_code'); } catch (_) {}   // clean up from older versions
+let ACCESS_TOKEN = '';
+let TOKEN_EXPIRES = 0;
+try {
+  ACCESS_TOKEN = localStorage.getItem('mca_token') || '';
+  TOKEN_EXPIRES = Number(localStorage.getItem('mca_token_exp')) || 0;
+} catch (_) {}
+if (TOKEN_EXPIRES <= Date.now()) { ACCESS_TOKEN = ''; clearSession(); }
+
+function clearSession() {
+  ACCESS_TOKEN = ''; TOKEN_EXPIRES = 0;
+  try { localStorage.removeItem('mca_token'); localStorage.removeItem('mca_token_exp'); } catch (_) {}
+}
+function authHeaders() {
+  return { 'Content-Type': 'application/json', 'X-Access-Token': ACCESS_TOKEN };
+}
+// Returns true when the response was an auth failure and has been handled.
+function authFailed(res) {
+  if (res.status === 401 || res.status === 403) { clearSession(); location.reload(); return true; }
+  if (res.status === 429) { alert('Too many failed attempts. Please wait a few minutes and try again.'); return true; }
+  return false;
+}
 let debounceTimer;
 let captchaAnswer;
 let CLEANUP_YEAR = new Date().getFullYear();
@@ -228,7 +250,7 @@ function checkCaptcha() {
   const val = parseInt(document.getElementById('captchaAnswer').value, 10);
   if (val === captchaAnswer) {
     document.getElementById('captcha').style.display = 'none';
-    if (ACCESS_CODE) {
+    if (ACCESS_TOKEN) {
       showApp();
     } else {
       document.getElementById('login').style.display = 'block';
@@ -254,8 +276,11 @@ async function doLogin() {
     if (!res.ok) { errEl.textContent = 'Server error: HTTP ' + res.status; return; }
     const data = await res.json();
     if (data.ok) {
-      ACCESS_CODE = code;
-      localStorage.setItem('mca_code', code);
+      if (!data.token) { errEl.textContent = 'Login response missing session — try again.'; return; }
+      ACCESS_TOKEN = data.token;
+      TOKEN_EXPIRES = Number(data.expiresAt) || (Date.now() + 12 * 3600 * 1000);
+      try { localStorage.setItem('mca_token', ACCESS_TOKEN); localStorage.setItem('mca_token_exp', String(TOKEN_EXPIRES)); } catch (_) {}
+      document.getElementById('code').value = '';
       showApp();
     } else {
       errEl.textContent = data.error || 'Incorrect code.';
@@ -298,10 +323,10 @@ async function runSearch(q) {
   try {
     const res = await fetch(API_BASE + '/search', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Access-Code': ACCESS_CODE },
+      headers: authHeaders(),
       body: JSON.stringify({ query: q })
     });
-    if (res.status === 403) { localStorage.removeItem('mca_code'); location.reload(); return; }
+    if (authFailed(res)) return;
     const data = await res.json();
     if (data.cleanupYear) CLEANUP_YEAR = data.cleanupYear;
     renderResults(data.results || []);
@@ -405,7 +430,7 @@ async function submitPay(id) {
   try {
     const res = await fetch(API_BASE + '/payment', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Access-Code': ACCESS_CODE },
+      headers: authHeaders(),
       body: JSON.stringify({
         memberId: id,
         method,
@@ -413,7 +438,7 @@ async function submitPay(id) {
         checkNumber: method === 'check' ? document.getElementById('paychk-' + id).value.trim() : ''
       })
     });
-    if (res.status === 403) { localStorage.removeItem('mca_code'); location.reload(); return; }
+    if (authFailed(res)) return;
     const data = await res.json();
     if (!data.ok) throw new Error((data.error || 'Could not save') + (data.detail ? ' — ' + data.detail : ''));
     m.latestPaidYear = data.latestPaidYear;
@@ -452,10 +477,10 @@ async function toggleDropoff(btn) {
   try {
     const res = await fetch(API_BASE + '/dropoff', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Access-Code': ACCESS_CODE },
+      headers: authHeaders(),
       body: JSON.stringify({ memberId: id, category: cat, dropped: !already })
     });
-    if (res.status === 403) { localStorage.removeItem('mca_code'); location.reload(); return; }
+    if (authFailed(res)) return;
     const data = await res.json();
     if (!data.ok) throw new Error((data.error || 'Could not save') + (data.detail ? ' — ' + data.detail : ''));
     m.dropoffs = data.dropoffs || {};
@@ -475,9 +500,10 @@ async function loadSummary() {
   try {
     const res = await fetch(API_BASE + '/cleanup_summary', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Access-Code': ACCESS_CODE },
+      headers: authHeaders(),
       body: '{}'
     });
+    if (authFailed(res)) return;
     if (!res.ok) return;
     const data = await res.json();
     if (!data.ok) return;
