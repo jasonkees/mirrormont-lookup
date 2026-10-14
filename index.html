@@ -161,7 +161,20 @@
     color: #94a3b8;
     cursor: pointer;
   }
+  .tools { display: flex; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid #334155; }
+  .tools button { flex: 1; background: transparent; border: none; color: #94a3b8; font-size: 14px; padding: 10px 4px; cursor: pointer; border-radius: 8px; }
+  .tools button:active { background: #0f172a; }
+  .editbox { margin-top: 10px; padding: 12px; border-radius: 10px; background: #0f172a; border: 1px solid #334155; }
+  .editbox .elabel { color: #94a3b8; font-size: 12px; margin: 8px 0 4px; text-transform: uppercase; letter-spacing: .04em; }
+  .editbox input, .editbox textarea { margin-bottom: 4px; }
+  .editbox textarea { width: 100%; min-height: 90px; padding: 12px; border-radius: 10px; border: 1px solid #334155; background: #1e293b; color: #f1f5f9; font-size: 16px; font-family: inherit; resize: vertical; }
+  .editbox textarea:focus { outline: none; border-color: #3b82f6; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .grid3 { display: grid; grid-template-columns: 2fr 1fr 1.2fr; gap: 8px; }
+  .editbox .note-note { color: #94a3b8; font-size: 12px; margin: 6px 0; }
+  .editbox .saved { color: #86efac; font-size: 14px; padding: 4px 0; }
 </style>
+
 </head>
 <body>
 <header>Mirrormont Lookup &amp; Spring Cleanup</header>
@@ -359,6 +372,7 @@ function cardHtml(m) {
           ${paid ? `Paid through ${esc(String(m.latestPaidYear || m.paidThrough))}` : `Dues due (last paid: ${esc(String(m.latestPaidYear || 'unknown'))})`}
         </div>
         ${dropoffHtml(m, paid)}
+        ${toolsHtml(m)}
       </div>`;
 }
 
@@ -445,6 +459,169 @@ async function submitPay(id) {
     m.paidThrough = data.paidThrough || m.paidThrough;
     const card = document.getElementById('card-' + id);
     if (card) card.outerHTML = cardHtml(m);   // card flips to "Paid" and the drop-off buttons appear
+  } catch (e) {
+    errEl.textContent = 'Could not save: ' + e.message;
+    go.disabled = false;
+  }
+}
+
+// ── EDIT CONTACT INFO + FOLLOW-UP NOTES ───────────────────
+// Contact details only. Dues / payment status can't be changed here (the server refuses it too).
+const EDIT_FIELDS = [
+  // key (server field), label, member property, input type
+  ['firstName',      'First name',        'firstName',      'text'],
+  ['lastName',       'Last name',         'lastName',       'text'],
+  ['phone',          'Phone',             'phone',          'tel'],
+  ['altPhone',       'Alt phone',         'altPhone',       'tel'],
+  ['email',          'Email',             'email',          'email'],
+  ['coFirstName',    'Co-member first',   'coFirstName',    'text'],
+  ['coLastName',     'Co-member last',    'coLastName',     'text'],
+  ['coEmail',        'Co-member email',   'coEmail',        'email'],
+  ['streetAddress',  'Address',           'address',        'text'],
+  ['mailingAddress', 'Mailing address',   'mailingAddress', 'text'],
+  ['city',           'City',              'city',           'text'],
+  ['state',          'State',             'state',          'text'],
+  ['zip',            'Zip',               'zip',            'text']
+];
+
+function getWho() { try { return localStorage.getItem('mca_who') || ''; } catch (_) { return ''; } }
+function setWho(v) { try { localStorage.setItem('mca_who', v); } catch (_) {} }
+
+function toolsHtml(m) {
+  const id = esc(m.id);
+  return `<div class="tools">
+      <button onclick="openEdit('${id}')">✎ Edit info</button>
+      <button onclick="openNote('${id}')">📝 Add note</button>
+    </div>
+    <div id="edit-${id}"></div><div id="note-${id}"></div>`;
+}
+
+function fld(id, key) { return document.getElementById('ef-' + id + '-' + key); }
+
+function openEdit(id) {
+  const m = memberStore[id], slot = document.getElementById('edit-' + id);
+  if (!m || !slot) return;
+  document.getElementById('note-' + id).innerHTML = '';
+  const inp = (k) => {
+    const f = EDIT_FIELDS.find(x => x[0] === k);
+    const extra = f[3] === 'email' ? ' autocapitalize="none" autocorrect="off" inputmode="email"' : (f[3] === 'tel' ? ' inputmode="tel"' : '');
+    return `<input id="ef-${id}-${k}" type="${f[3]}" value="${esc(String(m[f[2]] || ''))}" placeholder="${esc(f[1])}" autocomplete="off"${extra}>`;
+  };
+  slot.innerHTML = `
+    <div class="editbox">
+      <div class="elabel">Name</div>
+      <div class="grid2">${inp('firstName')}${inp('lastName')}</div>
+      <div class="elabel">Phone</div>
+      <div class="grid2">${inp('phone')}${inp('altPhone')}</div>
+      <div class="elabel">Email</div>${inp('email')}
+      <div class="elabel">Co-member</div>
+      <div class="grid2">${inp('coFirstName')}${inp('coLastName')}</div>
+      ${inp('coEmail')}
+      <div class="elabel">Address</div>${inp('streetAddress')}
+      <div class="elabel">Mailing address (if different)</div>${inp('mailingAddress')}
+      <div class="grid3">${inp('city')}${inp('state')}${inp('zip')}</div>
+      <div class="elabel">Your name (recorded with the change)</div>
+      <input id="ef-${id}-who" type="text" value="${esc(getWho())}" placeholder="Optional" autocomplete="off">
+      <div class="note-note">Dues and payment status can’t be changed here.</div>
+      <div class="payactions">
+        <button class="cancel" onclick="closeEdit('${id}')">Cancel</button>
+        <button class="go" id="editgo-${id}" onclick="submitEdit('${id}')">Save changes</button>
+      </div>
+      <div class="payerr" id="editerr-${id}"></div>
+    </div>`;
+}
+
+function closeEdit(id) {
+  const slot = document.getElementById('edit-' + id);
+  if (slot) slot.innerHTML = '';
+}
+
+async function submitEdit(id) {
+  const m = memberStore[id];
+  const errEl = document.getElementById('editerr-' + id);
+  if (!m) return;
+  const changes = {}, lines = [];
+  EDIT_FIELDS.forEach(([key, label, prop]) => {
+    const el = fld(id, key);
+    if (!el) return;
+    const val = el.value.replace(/\s+/g, ' ').trim();
+    const before = String(m[prop] || '');
+    if (val !== before) { changes[key] = val; lines.push(label + ': ' + (before || '(blank)') + ' → ' + (val || '(blank)')); }
+  });
+  if (!lines.length) { errEl.textContent = 'Nothing changed.'; return; }
+  if (!confirm('Save these changes for ' + (m.name || 'this member') + '?\n\n' + lines.join('\n'))) return;
+
+  const who = (document.getElementById('ef-' + id + '-who').value || '').trim();
+  setWho(who);
+  const go = document.getElementById('editgo-' + id);
+  go.disabled = true; errEl.textContent = '';
+  try {
+    const res = await fetch(API_BASE + '/member_update', {
+      method: 'POST', headers: authHeaders(),
+      body: JSON.stringify({ memberId: id, changes, who })
+    });
+    if (authFailed(res)) return;
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Could not save');
+    if (data.member) {
+      const u = data.member;
+      Object.assign(m, {
+        firstName: u.firstName, lastName: u.lastName, coFirstName: u.coFirstName, coLastName: u.coLastName,
+        phone: u.phone, altPhone: u.altPhone, email: u.email, coEmail: u.coEmail,
+        address: u.streetAddress, mailingAddress: u.mailingAddress, city: u.city, state: u.state, zip: u.zip,
+        name: (u.firstName + ' ' + u.lastName).trim(),
+        coName: (u.coFirstName + ' ' + u.coLastName).trim()
+      });
+    }
+    const card = document.getElementById('card-' + id);
+    if (card) card.outerHTML = cardHtml(m);
+  } catch (e) {
+    errEl.textContent = 'Could not save: ' + e.message;
+    go.disabled = false;
+  }
+}
+
+function openNote(id, saved) {
+  const m = memberStore[id], slot = document.getElementById('note-' + id);
+  if (!m || !slot) return;
+  document.getElementById('edit-' + id).innerHTML = '';
+  slot.innerHTML = `
+    <div class="editbox">
+      ${saved ? '<div class="saved">✓ Note saved for the membership team</div>' : ''}
+      <div class="elabel">Note for the membership team</div>
+      <textarea id="nf-${id}" maxlength="500" placeholder="e.g. Moved out, new owner at this address; wants to be taken off the email list"></textarea>
+      <div class="elabel">Your name (optional)</div>
+      <input id="nfwho-${id}" type="text" value="${esc(getWho())}" placeholder="Optional" autocomplete="off">
+      <div class="payactions">
+        <button class="cancel" onclick="closeNote('${id}')">${saved ? 'Done' : 'Cancel'}</button>
+        <button class="go" id="notego-${id}" onclick="submitNote('${id}')">Save note</button>
+      </div>
+      <div class="payerr" id="noteerr-${id}"></div>
+    </div>`;
+}
+
+function closeNote(id) {
+  const slot = document.getElementById('note-' + id);
+  if (slot) slot.innerHTML = '';
+}
+
+async function submitNote(id) {
+  const errEl = document.getElementById('noteerr-' + id);
+  const note = (document.getElementById('nf-' + id).value || '').trim();
+  const who  = (document.getElementById('nfwho-' + id).value || '').trim();
+  if (!note) { errEl.textContent = 'Type a note first.'; return; }
+  setWho(who);
+  const go = document.getElementById('notego-' + id);
+  go.disabled = true; errEl.textContent = '';
+  try {
+    const res = await fetch(API_BASE + '/member_note', {
+      method: 'POST', headers: authHeaders(),
+      body: JSON.stringify({ memberId: id, note, who })
+    });
+    if (authFailed(res)) return;
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Could not save');
+    openNote(id, true);
   } catch (e) {
     errEl.textContent = 'Could not save: ' + e.message;
     go.disabled = false;
