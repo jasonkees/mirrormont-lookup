@@ -133,17 +133,6 @@
   .payactions .go { background: #16a34a; color: #fff; }
   .payactions button:disabled { opacity: .6; }
   .payerr { color: #fca5a5; font-size: 13px; margin-top: 8px; }
-  #summary {
-    display: none;
-    background: #1e293b;
-    border-radius: 12px;
-    padding: 10px 14px;
-    margin-bottom: 12px;
-    font-size: 13px;
-    color: #cbd5e1;
-  }
-  #summary b { color: #f1f5f9; }
-  #summary .sline { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
   #clearBtn {
     display: none;
     position: absolute;
@@ -200,7 +189,6 @@
 
 <!-- Step 3: Search -->
 <div id="app">
-  <div id="summary"></div>
   <div class="search-wrap">
     <input id="q" type="search" placeholder="Search name, address, email, or phone…"
            oninput="onSearch()" autocomplete="off">
@@ -307,7 +295,6 @@ function showApp() {
   document.getElementById('login').style.display = 'none';
   document.getElementById('app').style.display = 'block';
   document.getElementById('q').focus();
-  loadSummary();
 }
 
 // ── SEARCH ────────────────────────────────────────────────
@@ -371,7 +358,9 @@ function maskEmail(e) {
   const s = String(e || '').trim();
   if (!s) return '';
   const at = s.lastIndexOf('@');
-  return at < 1 ? '••••••' : '••••••' + s.slice(at);
+  if (at < 1) return '••••••';
+  const keep = Math.min(2, Math.max(0, at - 1));   // never reveal a whole short name
+  return s.slice(0, keep) + '••••' + s.slice(at);
 }
 function shownContact(m, kind) {
   if (kind === 'phone') return m.phoneDisplay != null ? m.phoneDisplay : maskPhone(m.phone);
@@ -711,30 +700,10 @@ async function toggleDropoff(btn) {
       const old = card.querySelector('.dropoffs');
       if (old) old.outerHTML = dropoffHtml(m, true);
     }
-    loadSummary();
   } catch (e) {
     alert('Could not save: ' + e.message);
     group.forEach(b => b.disabled = false);
   }
-}
-
-async function loadSummary() {
-  const el = document.getElementById('summary');
-  try {
-    const res = await fetch(API_BASE + '/cleanup_summary', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: '{}'
-    });
-    if (authFailed(res)) return;
-    if (!res.ok) return;
-    const data = await res.json();
-    if (!data.ok) return;
-    const t = data.totals || {};
-    el.innerHTML = `<div class="sline"><span><b>${esc(String(data.year))} spring cleanup</b> · ${esc(String(data.households))} household${data.households === 1 ? '' : 's'}</span>` +
-      `<span>Garbage <b>${t.garbage || 0}</b> · Electronics <b>${t.electronics || 0}</b> · Styrofoam <b>${t.styrofoam || 0}</b></span></div>`;
-    el.style.display = 'block';
-  } catch (_) { /* summary is optional */ }
 }
 
 function esc(s) {
