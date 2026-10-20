@@ -358,6 +358,28 @@ function isPaid(m) {
   return !!(m.latestPaidYear && parseInt(m.latestPaidYear, 10) >= CLEANUP_YEAR);
 }
 
+// ── CONTACT MASKING ───────────────────────────────────────
+// The server sends phoneDisplay / emailDisplay already masked. These client
+// versions only run as a fallback and after an edit; real values are fetched
+// from /member_detail when "Edit info" is opened.
+function maskPhone(p) {
+  const d = String(p || '').replace(/\D/g, '');
+  if (!d) return '';
+  return d.length >= 4 ? '•••-•••-' + d.slice(-4) : '•••-••••';
+}
+function maskEmail(e) {
+  const s = String(e || '').trim();
+  if (!s) return '';
+  const at = s.lastIndexOf('@');
+  return at < 1 ? '••••••' : '••••••' + s.slice(at);
+}
+function shownContact(m, kind) {
+  if (kind === 'phone') return m.phoneDisplay != null ? m.phoneDisplay : maskPhone(m.phone);
+  return m.emailDisplay != null ? m.emailDisplay : maskEmail(m.email);
+}
+const RAW_CONTACT = ['phone', 'altPhone', 'email', 'coEmail'];
+function dropRawContact(m) { RAW_CONTACT.forEach(k => { delete m[k]; }); }
+
 function cardHtml(m) {
     const paid = isPaid(m);
     const coName = (m.coName || '').trim();
@@ -366,8 +388,8 @@ function cardHtml(m) {
         <div class="name">${esc(m.name || 'Unnamed')}</div>
         ${coName ? `<div class="co">${esc(coName)}</div>` : ''}
         <div class="row"><span>Address</span><span>${esc(m.address || '—')}</span></div>
-        ${m.phone ? `<div class="row"><span>Phone</span><a href="tel:${esc(m.phone)}">${esc(m.phone)}</a></div>` : ''}
-        ${m.email ? `<div class="row"><span>Email</span><a href="mailto:${esc(m.email)}">${esc(m.email)}</a></div>` : ''}
+        ${shownContact(m, 'phone') ? `<div class="row"><span>Phone</span><span>${esc(shownContact(m, 'phone'))}</span></div>` : ''}
+        ${shownContact(m, 'email') ? `<div class="row"><span>Email</span><span>${esc(shownContact(m, 'email'))}</span></div>` : ''}
         <div class="badge ${paid ? 'paid' : 'due'}">
           ${paid ? `Paid through ${esc(String(m.latestPaidYear || m.paidThrough))}` : `Dues due (last paid: ${esc(String(m.latestPaidYear || 'unknown'))})`}
         </div>
@@ -498,10 +520,29 @@ function toolsHtml(m) {
 
 function fld(id, key) { return document.getElementById('ef-' + id + '-' + key); }
 
-function openEdit(id) {
+async function openEdit(id) {
   const m = memberStore[id], slot = document.getElementById('edit-' + id);
   if (!m || !slot) return;
   document.getElementById('note-' + id).innerHTML = '';
+  // Real phone/email aren't in search results — fetch them for this one member.
+  slot.innerHTML = '<div class="editbox"><div class="note-note">Loading…</div></div>';
+  try {
+    const res = await fetch(API_BASE + '/member_detail', {
+      method: 'POST', headers: authHeaders(),
+      body: JSON.stringify({ memberId: id })
+    });
+    if (authFailed(res)) return;
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Could not load');
+    Object.assign(m, data.member);
+  } catch (e) {
+    // Backend not updated yet (older search results still carry the real values): carry on with those.
+    if (!('phone' in m) && !('email' in m)) {
+      slot.innerHTML = '<div class="editbox"><div class="payerr">Could not load contact details: ' + esc(e.message) + '</div></div>';
+      return;
+    }
+  }
+  if (!document.getElementById('edit-' + id)) return;
   const inp = (k) => {
     const f = EDIT_FIELDS.find(x => x[0] === k);
     const extra = f[3] === 'email' ? ' autocapitalize="none" autocorrect="off" inputmode="email"' : (f[3] === 'tel' ? ' inputmode="tel"' : '');
@@ -534,6 +575,7 @@ function openEdit(id) {
 function closeEdit(id) {
   const slot = document.getElementById('edit-' + id);
   if (slot) slot.innerHTML = '';
+  if (memberStore[id]) dropRawContact(memberStore[id]);
 }
 
 async function submitEdit(id) {
@@ -567,11 +609,15 @@ async function submitEdit(id) {
       const u = data.member;
       Object.assign(m, {
         firstName: u.firstName, lastName: u.lastName, coFirstName: u.coFirstName, coLastName: u.coLastName,
-        phone: u.phone, altPhone: u.altPhone, email: u.email, coEmail: u.coEmail,
+        phoneDisplay:    u.phoneDisplay    != null ? u.phoneDisplay    : maskPhone(u.phone),
+        altPhoneDisplay: u.altPhoneDisplay != null ? u.altPhoneDisplay : maskPhone(u.altPhone),
+        emailDisplay:    u.emailDisplay    != null ? u.emailDisplay    : maskEmail(u.email),
+        coEmailDisplay:  u.coEmailDisplay  != null ? u.coEmailDisplay  : maskEmail(u.coEmail),
         address: u.streetAddress, mailingAddress: u.mailingAddress, city: u.city, state: u.state, zip: u.zip,
         name: (u.firstName + ' ' + u.lastName).trim(),
         coName: (u.coFirstName + ' ' + u.coLastName).trim()
       });
+      dropRawContact(m);
     }
     const card = document.getElementById('card-' + id);
     if (card) card.outerHTML = cardHtml(m);
