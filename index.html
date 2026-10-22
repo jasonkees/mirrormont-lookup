@@ -35,7 +35,7 @@
     top: 0;
     z-index: 10;
   }
-  #captcha, #login, #app {
+  #welcome, #enroll, #captcha, #login, #app {
     max-width: 480px;
     margin: 0 auto;
     padding: 20px 16px;
@@ -65,7 +65,11 @@
     cursor: pointer;
   }
   button.primary:active { background: #2563eb; }
-  #login, #app { display: none; }
+  #login, #app, #welcome, #enroll, #captcha { display: none; }
+  .hint { color: #94a3b8; font-size: 13px; line-height: 1.5; margin: 14px 0 6px; }
+  button.linkbtn { background: none; border: none; color: #93c5fd; font-size: 14px; padding: 10px 0; cursor: pointer; text-decoration: underline; }
+  .signedin { text-align: center; color: #64748b; font-size: 12px; margin-top: 24px; }
+  .signedin button { background: none; border: none; color: #93c5fd; font-size: 12px; cursor: pointer; text-decoration: underline; padding: 0 4px; }
   .card { background: #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 10px; }
   .card .name { font-weight: 600; font-size: 16px; margin-bottom: 4px; }
   .card .co { color: #94a3b8; font-size: 13px; margin-bottom: 8px; }
@@ -168,7 +172,26 @@
 <body>
 <header>Mirrormont Lookup &amp; Spring Cleanup</header>
 
-<!-- Step 1: Math CAPTCHA -->
+<!-- Sign in with a passkey (invite-only) -->
+<div id="welcome">
+  <p class="label">Sign in with your passkey.</p>
+  <button class="primary" id="passkeyBtn" onclick="passkeyLogin()">Sign in with Face ID / fingerprint</button>
+  <div class="err" id="welcomeErr"></div>
+  <p class="hint" id="welcomeHint">Don’t have access yet? Ask a board member for an invite link.</p>
+  <button class="linkbtn" onclick="showBoardCode()">Use the board access code instead</button>
+</div>
+
+<!-- Set up this device from an invite link -->
+<div id="enroll">
+  <p class="label" id="enrollHello">Set up this device.</p>
+  <p class="hint">This creates a passkey on this device so you can sign in with Face ID, fingerprint or your device PIN. Nothing secret is stored on our servers.</p>
+  <input id="deviceLabel" type="text" maxlength="40" placeholder="Name this device (e.g. My iPhone)" autocomplete="off"
+         onkeydown="if(event.key==='Enter') enrollDevice()">
+  <button class="primary" id="enrollBtn" onclick="enrollDevice()">Create passkey</button>
+  <div class="err" id="enrollErr"></div>
+</div>
+
+<!-- Fallback: Math CAPTCHA, then the shared board code (retired after the passkey pilot) -->
 <div id="captcha">
   <p class="label">Please answer the question below to continue.</p>
   <div id="captchaQuestion"></div>
@@ -195,6 +218,7 @@
     <button id="clearBtn" onclick="clearSearch()">✕</button>
   </div>
   <div id="results"><div class="empty">Start typing to search members</div></div>
+  <div class="signedin" id="signedIn"></div>
 </div>
 
 <script>
@@ -203,15 +227,26 @@ const API_BASE = 'https://www.mirrormont.org/_functions';
 try { localStorage.removeItem('mca_code'); } catch (_) {}   // clean up from older versions
 let ACCESS_TOKEN = '';
 let TOKEN_EXPIRES = 0;
+let SIGNED_NAME = '';       // the signed-in person's name (passkey sessions only)
 try {
   ACCESS_TOKEN = localStorage.getItem('mca_token') || '';
   TOKEN_EXPIRES = Number(localStorage.getItem('mca_token_exp')) || 0;
+  SIGNED_NAME = localStorage.getItem('mca_name') || '';
 } catch (_) {}
 if (TOKEN_EXPIRES <= Date.now()) { ACCESS_TOKEN = ''; clearSession(); }
 
 function clearSession() {
-  ACCESS_TOKEN = ''; TOKEN_EXPIRES = 0;
-  try { localStorage.removeItem('mca_token'); localStorage.removeItem('mca_token_exp'); } catch (_) {}
+  ACCESS_TOKEN = ''; TOKEN_EXPIRES = 0; SIGNED_NAME = '';
+  try { localStorage.removeItem('mca_token'); localStorage.removeItem('mca_token_exp'); localStorage.removeItem('mca_name'); } catch (_) {}
+}
+function saveSession(data) {
+  ACCESS_TOKEN = data.token;
+  TOKEN_EXPIRES = Number(data.expiresAt) || (Date.now() + 8 * 3600 * 1000);
+  SIGNED_NAME = data.name || '';
+  try {
+    localStorage.setItem('mca_token', ACCESS_TOKEN); localStorage.setItem('mca_token_exp', String(TOKEN_EXPIRES));
+    if (SIGNED_NAME) localStorage.setItem('mca_name', SIGNED_NAME); else localStorage.removeItem('mca_name');
+  } catch (_) {}
 }
 function authHeaders() {
   return { 'Content-Type': 'application/json', 'X-Access-Token': ACCESS_TOKEN };
@@ -278,9 +313,7 @@ async function doLogin() {
     const data = await res.json();
     if (data.ok) {
       if (!data.token) { errEl.textContent = 'Login response missing session — try again.'; return; }
-      ACCESS_TOKEN = data.token;
-      TOKEN_EXPIRES = Number(data.expiresAt) || (Date.now() + 12 * 3600 * 1000);
-      try { localStorage.setItem('mca_token', ACCESS_TOKEN); localStorage.setItem('mca_token_exp', String(TOKEN_EXPIRES)); } catch (_) {}
+      saveSession({ token: data.token, expiresAt: data.expiresAt });   // legacy board-code session: no named person
       document.getElementById('code').value = '';
       showApp();
     } else {
@@ -291,9 +324,116 @@ async function doLogin() {
   }
 }
 
+// ── PASSKEYS ──────────────────────────────────────────────
+const b64u = {
+  enc: b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+  dec: s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))
+};
+const passkeysSupported = !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create);
+
+async function api(path, body) {
+  const res = await fetch(API_BASE + '/' + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  if (!res.ok) throw new Error('Server error: HTTP ' + res.status);
+  return res.json();
+}
+
+function showBoardCode() {
+  document.getElementById('welcome').style.display = 'none';
+  document.getElementById('captcha').style.display = 'block';
+}
+
+async function passkeyLogin() {
+  const err = document.getElementById('welcomeErr'), btn = document.getElementById('passkeyBtn');
+  err.textContent = ''; btn.disabled = true;
+  try {
+    const o = await api('passkey_login_options');
+    if (!o.ok) { err.textContent = o.error || 'Could not start sign-in.'; return; }
+    const op = o.options;
+    const cred = await navigator.credentials.get({ publicKey: { ...op, challenge: b64u.dec(op.challenge) } });
+    const data = await api('passkey_login_verify', { credential: {
+      id: cred.id, rawId: b64u.enc(cred.rawId), type: cred.type,
+      response: {
+        clientDataJSON: b64u.enc(cred.response.clientDataJSON), authenticatorData: b64u.enc(cred.response.authenticatorData),
+        signature: b64u.enc(cred.response.signature), userHandle: cred.response.userHandle ? b64u.enc(cred.response.userHandle) : null
+      } } });
+    if (!data.ok) { err.textContent = data.error || 'Sign-in failed.'; return; }
+    saveSession(data);
+    document.getElementById('welcome').style.display = 'none';
+    showApp();
+  } catch (e) {
+    err.textContent = (e && e.name === 'NotAllowedError')
+      ? 'Sign-in was cancelled, or no passkey for this app was found on this device. Tap to try again, or ask for an invite link.'
+      : 'Sign-in failed: ' + (e && e.message || e);
+  } finally { btn.disabled = false; }
+}
+
+// Invite link: https://lookup.mirrormont.org/#invite=<token>. The token stays in the URL fragment
+// (never sent to a server by the browser) and is removed from the address bar once it is read.
+let INVITE_TOKEN = '';
+function readInvite() {
+  const m = /^#invite=([A-Za-z0-9_-]{20,100})$/.exec(location.hash || '');
+  if (!m) return false;
+  INVITE_TOKEN = m[1];
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {}
+  return true;
+}
+function guessDeviceLabel() {
+  const ua = navigator.userAgent || '';
+  if (/iPhone/.test(ua)) return 'My iPhone';
+  if (/iPad/.test(ua)) return 'My iPad';
+  if (/Android/.test(ua)) return 'My Android phone';
+  if (/Macintosh/.test(ua)) return 'My Mac';
+  if (/Windows/.test(ua)) return 'My Windows PC';
+  return 'My device';
+}
+async function startEnroll() {
+  document.getElementById('enroll').style.display = 'block';
+  document.getElementById('deviceLabel').value = guessDeviceLabel();
+  const err = document.getElementById('enrollErr');
+  if (!passkeysSupported) { err.textContent = 'This browser can’t create passkeys. Open the link in Safari (iPhone) or Chrome (Android).'; document.getElementById('enrollBtn').disabled = true; return; }
+  try {
+    const o = await api('passkey_register_options', { invite: INVITE_TOKEN });
+    if (!o.ok) { err.textContent = o.error; document.getElementById('enrollBtn').disabled = true; return; }
+    window.__regOptions = o.options;
+    document.getElementById('enrollHello').textContent = 'Welcome, ' + o.name + '. Set up this device.';
+  } catch (e) { err.textContent = 'Could not reach the server: ' + e.message; }
+}
+async function enrollDevice() {
+  const err = document.getElementById('enrollErr'), btn = document.getElementById('enrollBtn');
+  err.textContent = '';
+  if (!window.__regOptions) { err.textContent = 'This invite is not ready — reload the page.'; return; }
+  btn.disabled = true;
+  try {
+    const op = window.__regOptions;
+    const cred = await navigator.credentials.create({ publicKey: { ...op, challenge: b64u.dec(op.challenge),
+      user: { ...op.user, id: b64u.dec(op.user.id) }, excludeCredentials: (op.excludeCredentials || []).map(c => ({ ...c, id: b64u.dec(c.id) })) } });
+    const data = await api('passkey_register_verify', { invite: INVITE_TOKEN, label: document.getElementById('deviceLabel').value, credential: {
+      id: cred.id, rawId: b64u.enc(cred.rawId), type: cred.type,
+      response: { clientDataJSON: b64u.enc(cred.response.clientDataJSON), attestationObject: b64u.enc(cred.response.attestationObject),
+        transports: cred.response.getTransports ? cred.response.getTransports() : [] } } });
+    if (!data.ok) { err.textContent = data.error || 'Could not register this device.'; btn.disabled = false; return; }
+    window.__regOptions = null; INVITE_TOKEN = '';
+    saveSession(data);
+    document.getElementById('enroll').style.display = 'none';
+    showApp();
+  } catch (e) {
+    err.textContent = (e && e.name === 'NotAllowedError') ? 'Cancelled. Tap “Create passkey” to try again.'
+      : (e && e.name === 'InvalidStateError') ? 'This device already has a passkey for this app — go back and sign in.'
+      : 'Setup failed: ' + (e && e.message || e);
+    btn.disabled = false;
+  }
+}
+
+async function signOut() {
+  try { await fetch(API_BASE + '/passkey_logout', { method: 'POST', headers: authHeaders(), body: '{}' }); } catch (_) {}
+  clearSession(); location.reload();
+}
+
 function showApp() {
   document.getElementById('login').style.display = 'none';
   document.getElementById('app').style.display = 'block';
+  document.getElementById('signedIn').innerHTML =
+    (SIGNED_NAME ? 'Signed in as ' + esc(SIGNED_NAME) + ' · ' : '') + '<button onclick="signOut()">Sign out</button>';
   document.getElementById('q').focus();
 }
 
@@ -550,8 +690,8 @@ async function openEdit(id) {
       <div class="elabel">Address</div>${inp('streetAddress')}
       <div class="elabel">Mailing address (if different)</div>${inp('mailingAddress')}
       <div class="grid3">${inp('city')}${inp('state')}${inp('zip')}</div>
-      <div class="elabel">Your name (recorded with the change)</div>
-      <input id="ef-${id}-who" type="text" value="${esc(getWho())}" placeholder="Optional" autocomplete="off">
+      ${SIGNED_NAME ? `<div class="note-note">This change will be recorded under your name (${esc(SIGNED_NAME)}).</div>` : `<div class="elabel">Your name (recorded with the change)</div>
+      <input id="ef-${id}-who" type="text" value="${esc(getWho())}" placeholder="Optional" autocomplete="off">`}
       <div class="note-note">Dues and payment status can’t be changed here.</div>
       <div class="payactions">
         <button class="cancel" onclick="closeEdit('${id}')">Cancel</button>
@@ -582,8 +722,9 @@ async function submitEdit(id) {
   if (!lines.length) { errEl.textContent = 'Nothing changed.'; return; }
   if (!confirm('Save these changes for ' + (m.name || 'this member') + '?\n\n' + lines.join('\n'))) return;
 
-  const who = (document.getElementById('ef-' + id + '-who').value || '').trim();
-  setWho(who);
+  const whoEl = document.getElementById('ef-' + id + '-who');
+  const who = whoEl ? (whoEl.value || '').trim() : '';
+  if (whoEl) setWho(who);
   const go = document.getElementById('editgo-' + id);
   go.disabled = true; errEl.textContent = '';
   try {
@@ -625,8 +766,8 @@ function openNote(id, saved) {
       ${saved ? '<div class="saved">✓ Note saved for the membership team</div>' : ''}
       <div class="elabel">Note for the membership team</div>
       <textarea id="nf-${id}" maxlength="500" placeholder="e.g. Moved out, new owner at this address; wants to be taken off the email list"></textarea>
-      <div class="elabel">Your name (optional)</div>
-      <input id="nfwho-${id}" type="text" value="${esc(getWho())}" placeholder="Optional" autocomplete="off">
+      ${SIGNED_NAME ? `<div class="note-note">Recorded under your name (${esc(SIGNED_NAME)}).</div>` : `<div class="elabel">Your name (optional)</div>
+      <input id="nfwho-${id}" type="text" value="${esc(getWho())}" placeholder="Optional" autocomplete="off">`}
       <div class="payactions">
         <button class="cancel" onclick="closeNote('${id}')">${saved ? 'Done' : 'Cancel'}</button>
         <button class="go" id="notego-${id}" onclick="submitNote('${id}')">Save note</button>
@@ -711,7 +852,18 @@ function esc(s) {
 }
 
 // ── INIT ──────────────────────────────────────────────────
+// An invite link opened while the app is already open only changes the fragment — reload so it is picked up.
+window.addEventListener('hashchange', () => { if (/^#invite=/.test(location.hash)) location.reload(); });
 initCaptcha();
+if (readInvite()) {
+  startEnroll();                                   // invite link: set up this device
+} else if (ACCESS_TOKEN) {
+  showApp();                                       // still signed in
+} else if (passkeysSupported) {
+  document.getElementById('welcome').style.display = 'block';
+} else {
+  document.getElementById('captcha').style.display = 'block';   // old browsers: board code only
+}
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('/service-worker.js').catch(() => {});
