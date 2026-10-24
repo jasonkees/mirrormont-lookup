@@ -178,7 +178,6 @@
   <button class="primary" id="passkeyBtn" onclick="passkeyLogin()">Sign in with Face ID / fingerprint</button>
   <div class="err" id="welcomeErr"></div>
   <p class="hint" id="welcomeHint">Don’t have access yet? Ask a board member for an invite link.</p>
-  <button class="linkbtn" onclick="showBoardCode()">Use the board access code instead</button>
 </div>
 
 <!-- Set up this device from an invite link -->
@@ -335,11 +334,6 @@ async function api(path, body) {
   const res = await fetch(API_BASE + '/' + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
   if (!res.ok) throw new Error('Server error: HTTP ' + res.status);
   return res.json();
-}
-
-function showBoardCode() {
-  document.getElementById('welcome').style.display = 'none';
-  document.getElementById('captcha').style.display = 'block';
 }
 
 async function passkeyLogin() {
@@ -852,17 +846,22 @@ function esc(s) {
 }
 
 // ── INIT ──────────────────────────────────────────────────
-// An invite link opened while the app is already open only changes the fragment — reload so it is picked up.
-window.addEventListener('hashchange', () => { if (/^#invite=/.test(location.hash)) location.reload(); });
+// An invite link (or the board-code address) opened while the app is already open only changes
+// the fragment — reload so it is picked up.
+window.addEventListener('hashchange', () => { if (/^#(invite=|board$)/.test(location.hash)) location.reload(); });
 initCaptcha();
 if (readInvite()) {
   startEnroll();                                   // invite link: set up this device
 } else if (ACCESS_TOKEN) {
   showApp();                                       // still signed in
-} else if (passkeysSupported) {
-  document.getElementById('welcome').style.display = 'block';
+} else if (location.hash === '#board') {
+  document.getElementById('captcha').style.display = 'block';   // board code: reachable only at this address, not linked from the page
 } else {
-  document.getElementById('captcha').style.display = 'block';   // old browsers: board code only
+  document.getElementById('welcome').style.display = 'block';
+  if (!passkeysSupported) {
+    document.getElementById('passkeyBtn').style.display = 'none';
+    document.getElementById('welcomeErr').textContent = 'This browser can’t use passkeys. Open the app in a current Safari (iPhone) or Chrome (Android/desktop).';
+  }
 }
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
