@@ -778,9 +778,11 @@ function closeNote(id) {
 async function submitNote(id) {
   const errEl = document.getElementById('noteerr-' + id);
   const note = (document.getElementById('nf-' + id).value || '').trim();
-  const who  = (document.getElementById('nfwho-' + id).value || '').trim();
+  // Signed-in (passkey) users have no name box: the server records who they are.
+  const whoEl = document.getElementById('nfwho-' + id);
+  const who  = whoEl ? (whoEl.value || '').trim() : '';
   if (!note) { errEl.textContent = 'Type a note first.'; return; }
-  setWho(who);
+  if (whoEl) setWho(who);
   const go = document.getElementById('notego-' + id);
   go.disabled = true; errEl.textContent = '';
   try {
